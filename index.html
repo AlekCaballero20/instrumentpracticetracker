@@ -1,27 +1,57 @@
 <!doctype html>
 <html lang="es">
 <head>
+  <!-- =========================
+       BASICS
+  ========================== -->
   <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#6d28d9" />
-  <meta name="color-scheme" content="light" />
-  <meta name="description" content="PWA para seguimiento equitativo de estudio musical (multi-instrumento). Offline y visual." />
 
-  <!-- PWA -->
+  <title>Instrument Tracker</title>
+  <meta name="description" content="PWA para seguimiento equitativo de estudio musical (multi-instrumento). Offline y visual." />
+  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#6d28d9" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+
+  <!-- =========================
+       PWA (Android / Desktop)
+  ========================== -->
   <link rel="manifest" href="./manifest.webmanifest" />
 
-  <!-- Styles -->
-  <link rel="stylesheet" href="./styles.css" />
+  <!-- Favicons / Icons -->
+  <!-- (Recomendado) favicon básico -->
+  <link rel="icon" href="./icons/icon-192.png" type="image/png" />
+  <!-- iOS Home Screen -->
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Instrument Tracker" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <!-- (Opcional) Mejor previews -->
+  <!-- Windows tiles (opcional pero ok) -->
+  <meta name="msapplication-TileColor" content="#6d28d9" />
+  <meta name="msapplication-config" content="none" />
+
+  <!-- =========================
+       SOCIAL PREVIEW
+  ========================== -->
   <meta property="og:title" content="Instrument Tracker" />
   <meta property="og:description" content="Registro de estudio musical equitativo, visual y offline." />
   <meta property="og:type" content="website" />
+  <!-- Si luego hacen una imagen OG, activen esto:
+  <meta property="og:image" content="./assets/og.png" />
+  -->
 
-  <title>Instrument Tracker</title>
+  <!-- =========================
+       STYLES
+  ========================== -->
+  <link rel="stylesheet" href="./styles.css" />
+
 </head>
 
 <body>
+  <!-- Accesibilidad: salto a contenido -->
   <a class="skip" href="#main">Saltar al contenido</a>
 
   <!-- Background decor -->
@@ -45,37 +75,40 @@
 
     <div class="topbar__right" role="group" aria-label="Acciones">
       <button id="installBtn" class="btn btn--ghost" type="button" hidden>
-        <span class="btn__icon" aria-hidden="true">⬇️</span> Instalar
+        <span class="btn__icon" aria-hidden="true">⬇️</span>
+        <span>Instalar</span>
       </button>
 
       <button id="backupBtn" class="btn btn--ghost" type="button">
-        <span class="btn__icon" aria-hidden="true">💾</span> Exportar
+        <span class="btn__icon" aria-hidden="true">💾</span>
+        <span>Exportar</span>
       </button>
 
       <button id="restoreBtn" class="btn btn--ghost" type="button">
-        <span class="btn__icon" aria-hidden="true">📥</span> Importar
+        <span class="btn__icon" aria-hidden="true">📥</span>
+        <span>Importar</span>
       </button>
 
-      <input id="restoreFile" type="file" accept="application/json" hidden />
+      <input id="restoreFile" type="file" accept="application/json" hidden aria-hidden="true" />
     </div>
   </header>
 
-  <main id="main" class="app" role="main">
+  <main id="main" class="app" role="main" tabindex="-1">
     <!-- Tabs -->
     <nav class="tabs" aria-label="Navegación principal">
-      <button class="tab is-active" data-view="home" type="button">
+      <button class="tab is-active" data-view="home" type="button" aria-controls="view-home">
         <span aria-hidden="true">🏠</span> Inicio
       </button>
-      <button class="tab" data-view="next" type="button">
+      <button class="tab" data-view="next" type="button" aria-controls="view-next">
         <span aria-hidden="true">🎲</span> Qué sigue
       </button>
-      <button class="tab" data-view="log" type="button">
+      <button class="tab" data-view="log" type="button" aria-controls="view-log">
         <span aria-hidden="true">➕</span> Registrar
       </button>
-      <button class="tab" data-view="history" type="button">
+      <button class="tab" data-view="history" type="button" aria-controls="view-history">
         <span aria-hidden="true">🗂️</span> Historial
       </button>
-      <button class="tab" data-view="instruments" type="button">
+      <button class="tab" data-view="instruments" type="button" aria-controls="view-instruments">
         <span aria-hidden="true">🎛️</span> Instrumentos
       </button>
     </nav>
@@ -379,7 +412,6 @@
           </div>
 
           <div class="timer" role="region" aria-label="Cronómetro">
-            <!-- IDs alineados con app.js nuevo -->
             <div class="timer__display" id="timerClock">00:00</div>
             <div class="timer__sub muted" id="timerStatus">Listo.</div>
 
@@ -486,7 +518,6 @@
             </div>
           </div>
 
-          <!-- Settings toggles (alineados con app.js) -->
           <div class="row row--2" style="margin-top:10px;">
             <label class="field field--inline" style="align-items:center;">
               <span>Evitar repetirse</span>
