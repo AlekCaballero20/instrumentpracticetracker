@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#6d28d9" />
+  <meta name="color-scheme" content="light" />
+  <meta name="description" content="PWA para seguimiento equitativo de estudio musical (multi-instrumento). Offline y visual." />
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.webmanifest" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="./styles.css" />
+
+  <!-- (Opcional) Mejor previews -->
+  <meta property="og:title" content="Instrument Tracker" />
+  <meta property="og:description" content="Registro de estudio musical equitativo, visual y offline." />
+  <meta property="og:type" content="website" />
+
+  <title>Instrument Tracker</title>
+</head>
+
+<body>
+  <a class="skip" href="#main">Saltar al contenido</a>
+
+  <!-- Background decor -->
+  <div class="bg-blobs" aria-hidden="true">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="grid-noise"></div>
+  </div>
+
+  <header class="topbar" role="banner">
+    <div class="topbar__left">
+      <div class="brand" aria-label="Instrument Tracker">
+        <div class="brand__mark" aria-hidden="true">♪</div>
+        <div class="brand__text">
+          <div class="brand__title">Instrument Tracker</div>
+          <div class="brand__sub">Equitativo · Visual · Offline</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="topbar__right" role="group" aria-label="Acciones">
+      <button id="installBtn" class="btn btn--ghost" type="button" hidden>
+        <span class="btn__icon" aria-hidden="true">⬇️</span> Instalar
+      </button>
+
+      <button id="backupBtn" class="btn btn--ghost" type="button">
+        <span class="btn__icon" aria-hidden="true">💾</span> Exportar
+      </button>
+
+      <button id="restoreBtn" class="btn btn--ghost" type="button">
+        <span class="btn__icon" aria-hidden="true">📥</span> Importar
+      </button>
+
+      <input id="restoreFile" type="file" accept="application/json" hidden />
+    </div>
+  </header>
+
+  <main id="main" class="app" role="main">
+    <!-- Tabs -->
+    <nav class="tabs" aria-label="Navegación principal">
+      <button class="tab is-active" data-view="home" type="button">
+        <span aria-hidden="true">🏠</span> Inicio
+      </button>
+      <button class="tab" data-view="next" type="button">
+        <span aria-hidden="true">🎲</span> Qué sigue
+      </button>
+      <button class="tab" data-view="log" type="button">
+        <span aria-hidden="true">➕</span> Registrar
+      </button>
+      <button class="tab" data-view="history" type="button">
+        <span aria-hidden="true">🗂️</span> Historial
+      </button>
+      <button class="tab" data-view="instruments" type="button">
+        <span aria-hidden="true">🎛️</span> Instrumentos
+      </button>
+    </nav>
+
+    <!-- =========================
+         VIEW: HOME
+    ========================== -->
+    <section class="view is-active" id="view-home" data-view="home" aria-label="Inicio">
+      <div class="grid grid--2">
+        <div class="card card--hero">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Dashboard</div>
+              <h2 class="h2">Tu estudio, sin drama</h2>
+              <p class="muted">
+                Equilibrio real: tiempo, frecuencia y disponibilidad.
+                Nada de “te tocó batería” cuando no hay batería.
+              </p>
+            </div>
+
+            <div class="hero-actions">
+              <button id="quickNextBtn" class="btn btn--primary" type="button">
+                <span class="btn__icon" aria-hidden="true">🎲</span> Elegir “Qué sigue”
+              </button>
+              <button class="btn btn--soft" type="button" data-goto="log">
+                <span class="btn__icon" aria-hidden="true">➕</span> Registrar sesión
+              </button>
+            </div>
+          </div>
+
+          <!-- KPIs (alineados con app.js nuevo) -->
+          <div class="kpis">
+            <div class="kpi">
+              <div class="kpi__label">Últimos 7 días</div>
+              <div class="kpi__value" id="kpi7">0</div>
+              <div class="kpi__hint" id="kpi7Meta">0 sesión(es)</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi__label">Últimos 30 días</div>
+              <div class="kpi__value" id="kpi30">0</div>
+              <div class="kpi__hint" id="kpi30Meta">0 sesión(es)</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi__label">Racha</div>
+              <div class="kpi__value" id="kpiStreak">0 día(s)</div>
+              <div class="kpi__hint" id="kpiStreakMeta">Arranquen hoy con 10 min</div>
+            </div>
+
+            <div class="kpi">
+              <div class="kpi__label">Más olvidado</div>
+              <div class="kpi__value" id="kpiForgot">—</div>
+              <div class="kpi__hint">El que está criando polvo 😌</div>
+            </div>
+          </div>
+
+          <div class="split">
+            <div class="mini-card">
+              <div class="mini-card__title">Distribución por componente (30 días)</div>
+              <div class="bars" id="compBars" aria-label="Distribución por componente"></div>
+              <div class="legend" aria-label="Leyenda de componentes">
+                <span class="pill pill--tech">Técnico</span>
+                <span class="pill pill--theory">Teórico</span>
+                <span class="pill pill--rep">Repertorio</span>
+              </div>
+            </div>
+
+            <div class="mini-card">
+              <div class="mini-card__title">Top instrumentos (30 días)</div>
+              <div class="rank" id="topRank" aria-label="Top instrumentos"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Disponible hoy</div>
+              <h3 class="h3">A la mano ahora</h3>
+              <p class="muted">Esto controla el selector de “Qué sigue”.</p>
+            </div>
+
+            <button id="toggleAllAvailBtn" class="btn btn--ghost" type="button">
+              <span class="btn__icon" aria-hidden="true">🪄</span> Marcar todos disponibles
+            </button>
+          </div>
+
+          <div class="chips" id="availChips" aria-label="Chips de disponibilidad"></div>
+
+          <div class="card__foot">
+            <div class="muted">
+              Tip: toca un chip para alternar “a la mano”. Si no está disponible, la app no lo sugiere.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: NEXT
+    ========================== -->
+    <section class="view" id="view-next" data-view="next" aria-label="Qué sigue">
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Selector inteligente</div>
+              <h2 class="h2">¿Qué sigue?</h2>
+              <p class="muted">Solo elige entre lo disponible. Equidad + variedad + prioridad.</p>
+            </div>
+
+            <div class="stack">
+              <button id="pickNextBtn" class="btn btn--primary" type="button">
+                <span class="btn__icon" aria-hidden="true">🎲</span> Elegir ahora
+              </button>
+              <button id="pickAltBtn" class="btn btn--soft" type="button">
+                <span class="btn__icon" aria-hidden="true">🔁</span> Otra opción
+              </button>
+            </div>
+          </div>
+
+          <div class="next-card" id="nextResult" aria-live="polite">
+            <div class="next-card__placeholder">
+              Presiona <b>Elegir ahora</b> y te digo qué estudiar sin sabotearte 😌
+            </div>
+          </div>
+
+          <div class="card__foot">
+            <button id="startTimerBtn" class="btn btn--ghost" type="button" disabled>
+              <span class="btn__icon" aria-hidden="true">⏱️</span> Empezar cronómetro
+            </button>
+            <button id="logFromNextBtn" class="btn btn--ghost" type="button" disabled>
+              <span class="btn__icon" aria-hidden="true">➕</span> Registrar con este instrumento
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Reglas</div>
+              <h3 class="h3">Cómo decide</h3>
+              <p class="muted">No magia. Solo buen criterio automatizado.</p>
+            </div>
+          </div>
+
+          <div class="rule-list">
+            <div class="rule">
+              <div class="rule__icon" aria-hidden="true">🕒</div>
+              <div>
+                <div class="rule__title">Tiempo desde última práctica</div>
+                <div class="muted">Entre más días sin tocarlo, más prioridad.</div>
+              </div>
+            </div>
+            <div class="rule">
+              <div class="rule__icon" aria-hidden="true">⚖️</div>
+              <div>
+                <div class="rule__title">Equidad por minutos</div>
+                <div class="muted">El que menos minutos tiene (30 días) sube.</div>
+              </div>
+            </div>
+            <div class="rule">
+              <div class="rule__icon" aria-hidden="true">⭐</div>
+              <div>
+                <div class="rule__title">Prioridad manual</div>
+                <div class="muted">Ustedes suben/bajan el peso por instrumento.</div>
+              </div>
+            </div>
+            <div class="rule">
+              <div class="rule__icon" aria-hidden="true">🌀</div>
+              <div>
+                <div class="rule__title">Variedad</div>
+                <div class="muted">Evita repetirse seguido cuando hay opciones.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="muted small">
+            Ajusten prioridades en <b>Instrumentos</b>. La app no juzga sus decisiones cuestionables, solo las ejecuta.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: LOG
+    ========================== -->
+    <section class="view" id="view-log" data-view="log" aria-label="Registrar sesión">
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Nueva sesión</div>
+              <h2 class="h2">Registrar estudio</h2>
+              <p class="muted">Técnico, teórico y repertorio (con minutos y notas). Sí, como debe ser.</p>
+            </div>
+          </div>
+
+          <form id="logForm" class="form" autocomplete="off">
+            <div class="row row--2">
+              <label class="field">
+                <span>Persona</span>
+                <select id="who">
+                  <option value="Alek">Alek</option>
+                  <option value="Cata">Cata</option>
+                  <option value="Duo">Duo</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Instrumento/Área</span>
+                <select id="instrumentSelect"></select>
+              </label>
+            </div>
+
+            <div class="row row--2">
+              <label class="field">
+                <span>Fecha</span>
+                <input id="date" type="date" required />
+              </label>
+
+              <label class="field">
+                <span>Duración total (min)</span>
+                <input id="totalMin" type="number" inputmode="numeric" min="1" step="1" value="20" required />
+              </label>
+            </div>
+
+            <div class="row row--3">
+              <label class="field field--comp">
+                <span>🎯 Técnico (min)</span>
+                <input id="techMin" type="number" min="0" step="1" value="10" />
+                <textarea id="techNotes" rows="2" placeholder="Escalas, independencia, embocadura, rudimentos..."></textarea>
+              </label>
+
+              <label class="field field--comp">
+                <span>🧠 Teórico (min)</span>
+                <input id="theoryMin" type="number" min="0" step="1" value="5" />
+                <textarea id="theoryNotes" rows="2" placeholder="Lectura, armonía, ritmo, ear training..."></textarea>
+              </label>
+
+              <label class="field field--comp">
+                <span>🎵 Repertorio (min)</span>
+                <input id="repMin" type="number" min="0" step="1" value="5" />
+                <textarea id="repNotes" rows="2" placeholder="Canción X, pasaje difícil, tempo objetivo..."></textarea>
+              </label>
+            </div>
+
+            <div class="row row--2">
+              <label class="field">
+                <span>Mood (1–5)</span>
+                <input id="mood" type="range" min="1" max="5" value="4" />
+                <div class="range-meta">
+                  <span class="muted small">Bajo</span>
+                  <span class="range-pill" id="moodPill">4</span>
+                  <span class="muted small">Alto</span>
+                </div>
+              </label>
+
+              <fieldset class="field" style="border:0; padding:0; margin:0;">
+                <legend style="font-size: 0.95rem; font-weight: 700; margin-bottom: 8px;">Dificultad</legend>
+                <div class="seg" role="radiogroup" aria-label="Dificultad">
+                  <input type="radio" name="diff" id="diffEasy" value="easy" checked />
+                  <label for="diffEasy">Fácil</label>
+
+                  <input type="radio" name="diff" id="diffOk" value="ok" />
+                  <label for="diffOk">Ok</label>
+
+                  <input type="radio" name="diff" id="diffHard" value="hard" />
+                  <label for="diffHard">Duro</label>
+                </div>
+              </fieldset>
+            </div>
+
+            <label class="field">
+              <span>Tags (separados por coma)</span>
+              <input id="tags" type="text" placeholder="lectura, afinación, velocidad, groove..." />
+            </label>
+
+            <div class="actions">
+              <button class="btn btn--primary" type="submit">
+                <span class="btn__icon" aria-hidden="true">✅</span> Guardar sesión
+              </button>
+
+              <button id="resetFormBtn" class="btn btn--ghost" type="button">
+                <span class="btn__icon" aria-hidden="true">🧼</span> Limpiar
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Cronómetro</div>
+              <h3 class="h3">Modo estudio</h3>
+              <p class="muted">Opcional. Start, Stop y luego “pasar a min” para sumar al total.</p>
+            </div>
+          </div>
+
+          <div class="timer" role="region" aria-label="Cronómetro">
+            <!-- IDs alineados con app.js nuevo -->
+            <div class="timer__display" id="timerClock">00:00</div>
+            <div class="timer__sub muted" id="timerStatus">Listo.</div>
+
+            <div class="timer__actions">
+              <button id="timerStart" class="btn btn--primary" type="button">
+                <span class="btn__icon" aria-hidden="true">▶️</span> Start
+              </button>
+
+              <button id="timerStop" class="btn btn--soft" type="button" disabled>
+                <span class="btn__icon" aria-hidden="true">⏸️</span> Stop
+              </button>
+
+              <button id="timerApply" class="btn btn--ghost" type="button" disabled>
+                <span class="btn__icon" aria-hidden="true">🧩</span> Pasar a “min”
+              </button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="muted small">
+            Pro tip: un mini estudio de 5–10 minutos suele ganarle a “mañana estudio 2 horas” (spoiler: no).
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: HISTORY
+    ========================== -->
+    <section class="view" id="view-history" data-view="history" aria-label="Historial">
+      <div class="card">
+        <div class="card__head">
+          <div>
+            <div class="kicker">Historial</div>
+            <h2 class="h2">Sesiones registradas</h2>
+            <p class="muted">Filtren rápido y vean qué han hecho (sin llorar).</p>
+          </div>
+
+          <div class="stack">
+            <button id="clearAllBtn" class="btn btn--danger" type="button">
+              <span class="btn__icon" aria-hidden="true">🧨</span> Borrar todo
+            </button>
+          </div>
+        </div>
+
+        <div class="filters" aria-label="Filtros de historial">
+          <label class="field field--inline">
+            <span>Buscar</span>
+            <input id="searchInput" type="search" placeholder="guitarra, lectura, groove..." />
+          </label>
+
+          <label class="field field--inline">
+            <span>Instrumento</span>
+            <select id="filterInstrument"></select>
+          </label>
+
+          <label class="field field--inline">
+            <span>Persona</span>
+            <select id="filterWho">
+              <option value="all">Todos</option>
+              <option value="Alek">Alek</option>
+              <option value="Cata">Cata</option>
+              <option value="Duo">Duo</option>
+            </select>
+          </label>
+
+          <label class="field field--inline">
+            <span>Últimos</span>
+            <select id="filterRange">
+              <option value="30">30 días</option>
+              <option value="90">90 días</option>
+              <option value="365">1 año</option>
+              <option value="99999">Todo</option>
+            </select>
+          </label>
+
+          <button id="resetFiltersBtn" class="btn btn--ghost" type="button">
+            <span class="btn__icon" aria-hidden="true">🧽</span> Limpiar filtros
+          </button>
+        </div>
+
+        <div class="list" id="historyList"></div>
+
+        <div class="empty" id="historyEmpty" hidden>
+          <div class="empty__icon" aria-hidden="true">🫧</div>
+          <div class="empty__title">No hay sesiones con esos filtros</div>
+          <div class="muted">O sea, sí han estudiado… solo que el filtro está muy intenso.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =========================
+         VIEW: INSTRUMENTS
+    ========================== -->
+    <section class="view" id="view-instruments" data-view="instruments" aria-label="Instrumentos">
+      <div class="grid grid--2">
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Configuración</div>
+              <h2 class="h2">Instrumentos & disponibilidad</h2>
+              <p class="muted">Ajusten disponibilidad y prioridad (peso). Esto controla el selector.</p>
+            </div>
+          </div>
+
+          <!-- Settings toggles (alineados con app.js) -->
+          <div class="row row--2" style="margin-top:10px;">
+            <label class="field field--inline" style="align-items:center;">
+              <span>Evitar repetirse</span>
+              <input id="toggleRepeat" type="checkbox" />
+            </label>
+
+            <label class="field field--inline" style="align-items:center;">
+              <span>Confetti</span>
+              <input id="toggleConfetti" type="checkbox" />
+            </label>
+          </div>
+
+          <div class="muted small" style="margin-top:10px;">
+            Prioridad: 0..5 se convierte internamente a un multiplicador (aprox 0.7x a 1.5x).
+            Suban si quieren que aparezca más.
+          </div>
+
+          <div class="instr-list" id="instrList" aria-label="Lista de instrumentos"></div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <div>
+              <div class="kicker">Vista rápida</div>
+              <h3 class="h3">Resumen</h3>
+              <p class="muted">Activos, disponibles y un par de pistas para decidir.</p>
+            </div>
+          </div>
+
+          <div class="summary" id="instrSummary"></div>
+
+          <div class="divider"></div>
+
+          <div class="muted small">
+            Consejo rolo: si están sin instrumento físico, marquen como disponibles Teoría/Producción/Composición y listo.
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Confetti -->
+  <div id="confetti" class="confetti" aria-hidden="true"></div>
+
+  <noscript>
+    <div style="padding:16px; max-width:900px; margin: 12px auto; background:#fff; border-radius:14px;">
+      Esta app necesita JavaScript para funcionar. Sí, es 2026 y seguimos con esto.
+    </div>
+  </noscript>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

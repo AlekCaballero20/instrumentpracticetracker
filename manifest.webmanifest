@@ -1,0 +1,13 @@
+{
+  "name": "Instrument Tracker",
+  "short_name": "Tracker",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7ff",
+  "theme_color": "#6d28d9",
+  "description": "PWA para seguimiento equitativo de estudio musical (multi-instrumento).",
+  "lang": "es",
+  "categories": ["music", "education", "productivity"],
+  "icons": []
+}
