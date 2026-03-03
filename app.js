@@ -1,19 +1,26 @@
 /* =============================================================================
-  Instrument Tracker — app.js (PRO, aligned with current index.html)
-  - Dashboard + Next picker + Log + History filters + Instruments manager
+  Instrument Tracker — app.js (PRO, aligned with current index.html) v3.1
+  - Dashboard + Next picker + Log + History (con agrupación por día) + Instruments manager
   - Compatible con DB vieja (migra y no rompe)
-  - PWA wiring desde pwa.js
+  - Timer robusto (Date.now), persistente, alarmas por bloques + toast + vibración + notificación
 
-  ✅ FIX 2026-03-03:
-  - Timer robusto en background (Date.now, no rAF)
-  - Persistencia del timer (no se “pierde” al bloquear pantalla)
-  - Alarmas por bloques (Técnico → Teórico → Repertorio) según el Log
-  - Notificación + vibración + toast (cuando el navegador lo permita)
+  ✅ MEJORAS 2026-03-03:
+  - Render de “Top” usando clases que sí existen (rank__item)
+  - Historial agrupado por fecha (usa .history-group del CSS mejorado)
+  - Mejor búsqueda (incluye nombre del instrumento + notas)
+  - “Next” se invalida si el instrumento quedó archivado/no disponible
+  - Menos escrituras innecesarias en localStorage (cache calc no re-salva por deporte)
 ============================================================================= */
 
 'use strict';
 
-import { STORAGE_KEY, INSTRUMENTS, DEFAULT_SETTINGS, DEFAULT_INSTRUMENT_STATE } from './config.js';
+import {
+  STORAGE_KEY,
+  INSTRUMENTS,
+  DEFAULT_SETTINGS,
+  DEFAULT_INSTRUMENT_STATE
+} from './config.js';
+
 import { setupInstallPrompt, registerServiceWorker } from './pwa.js';
 
 const deepClone = (typeof structuredClone === 'function')
@@ -80,10 +87,7 @@ function resetDB(){
     settings: deepClone(DEFAULT_SETTINGS),
     instruments: {},
     sessions: [],
-    ui: {
-      lastPickId: null,
-      lastPickedAt: null
-    }
+    ui: { lastPickId: null, lastPickedAt: null }
   };
   INSTRUMENTS.forEach(i => { db.instruments[i.id] = DEFAULT_INSTRUMENT_STATE(); });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -91,35 +95,29 @@ function resetDB(){
 }
 
 function normalizeDB(db){
-  // Base shape
   db = db && typeof db === 'object' ? db : {};
   db.version = db.version || 1;
 
-  // Settings
   db.settings = db.settings || deepClone(DEFAULT_SETTINGS);
   db.settings.weights = db.settings.weights || deepClone(DEFAULT_SETTINGS.weights);
   db.settings.avoidRepeat = (db.settings.avoidRepeat !== false);
   db.settings.showConfetti = (db.settings.showConfetti !== false);
 
-  // Data
   db.instruments = db.instruments || {};
   db.sessions = Array.isArray(db.sessions) ? db.sessions : [];
   db.ui = db.ui || { lastPickId:null, lastPickedAt:null };
 
-  // Ensure instruments states exist
   INSTRUMENTS.forEach(i => {
     if(!db.instruments[i.id]) db.instruments[i.id] = DEFAULT_INSTRUMENT_STATE();
     db.instruments[i.id] = { ...DEFAULT_INSTRUMENT_STATE(), ...db.instruments[i.id] };
   });
 
-  // Ensure weights for all instruments, clamp to 0..5 (stored scale)
   INSTRUMENTS.forEach(i => {
     const cur = db.settings.weights[i.id];
     if(typeof cur !== 'number') db.settings.weights[i.id] = DEFAULT_SETTINGS.weights[i.id] ?? 2;
     db.settings.weights[i.id] = clamp(db.settings.weights[i.id], 0, 5);
   });
 
-  // Sanitize sessions: accept old + new schema
   db.sessions = db.sessions
     .filter(s => s && s.instrumentId && (s.at || s.date))
     .map(s => {
@@ -140,7 +138,6 @@ function normalizeDB(db){
         tags: Array.isArray(s.tags) ? s.tags.slice(0, 20) : [],
       };
     })
-    // newest first
     .sort((a,b) => new Date(b.at) - new Date(a.at));
 
   return db;
@@ -171,7 +168,6 @@ function toast(msg, hint=''){
   const t = $('#toast');
   if(!t) return;
 
-  // Ensure structure exists
   if(!t.dataset.ready){
     t.innerHTML = `
       <div class="toast__row">
@@ -221,12 +217,9 @@ function confettiBurst(){
 ========================= */
 
 function setActiveView(view){
-  // view ids are: view-home, view-next, view-log, view-history, view-instruments
   const id = `view-${view}`;
   $$('.tab').forEach(b => b.classList.toggle('is-active', b.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('is-active', v.id === id));
-
-  // little UX: reset scroll
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -239,7 +232,7 @@ function bindNav(){
    Core calculations / caches
 ========================= */
 
-function computeCaches(){
+function computeCaches({ persist=true } = {}){
   const w7  = startOfWindow(7);
   const w30 = startOfWindow(30);
 
@@ -265,7 +258,7 @@ function computeCaches(){
     st.lastStudiedAt = per[i.id].last || st.lastStudiedAt || null;
   });
 
-  saveDB();
+  if(persist) saveDB();
 }
 
 function componentTotals(days=30){
@@ -285,8 +278,7 @@ function totalMinutes(days=30){
   const from = startOfWindow(days);
   let sum = 0;
   for(const s of DB.sessions){
-    const dt = new Date(s.at);
-    if(dt < from) continue;
+    if(new Date(s.at) < from) continue;
     sum += Number(s.minutesTotal || 0);
   }
   return sum;
@@ -302,11 +294,8 @@ function totalSessions(days=30){
 }
 
 function calcStreakDays(){
-  // streak by calendar date with any session
   const dates = new Set(DB.sessions.map(s => s.date));
   let streak = 0;
-
-  // Start from today and count backwards as long as dates exist
   const d = new Date();
   for(;;){
     const iso = (function(){
@@ -314,7 +303,6 @@ function calcStreakDays(){
       x.setMinutes(x.getMinutes() - x.getTimezoneOffset());
       return x.toISOString().slice(0,10);
     })();
-
     if(!dates.has(iso)) break;
     streak++;
     d.setDate(d.getDate() - 1);
@@ -323,14 +311,13 @@ function calcStreakDays(){
 }
 
 function instrumentMeta(id){
-  return INSTRUMENTS.find(i => i.id === id);
+  return INSTRUMENTS.find(i => i.id === id) || null;
 }
 
 function weightToMultiplier(w0to5){
-  // stored weight 0..5, display multiplier ~0.7..1.5
   const w = clamp(w0to5, 0, 5);
   const mult = 0.7 + (w * 0.16);
-  return Math.round(mult * 10) / 10; // 1 decimal
+  return Math.round(mult * 10) / 10;
 }
 
 /* =========================
@@ -348,10 +335,6 @@ function scoreInstrument(id){
   const d = daysSince(st.lastStudiedAt);
   const m30 = Number(st.minutesMonth || 0);
 
-  // Rules (per UI):
-  // - More days since last -> more priority
-  // - Less minutes in 30d -> more priority
-  // - Manual priority multiplier
   let score =
     (d * 5) +
     (Math.max(0, 240 - m30) * 0.10);
@@ -360,8 +343,7 @@ function scoreInstrument(id){
 
   if(DB.settings.avoidRepeat && DB.ui.lastPickId === id) score -= 18;
 
-  score += (Math.random() * 2.5); // controlled variety
-
+  score += (Math.random() * 2.5);
   return score;
 }
 
@@ -377,7 +359,7 @@ function pickNext({ avoidLast=true } = {}){
 
   for(const id of candidates){
     let sc = scoreInstrument(id);
-    if(avoidLast && DB.ui.lastPickId && id === DB.ui.lastPickId) sc -= 10; // even more variety
+    if(avoidLast && DB.ui.lastPickId && id === DB.ui.lastPickId) sc -= 10;
     if(sc > bestScore){
       bestScore = sc;
       bestId = id;
@@ -412,7 +394,6 @@ function addSession(payload){
     tags: Array.isArray(payload.tags) ? payload.tags.slice(0,20) : [],
   };
 
-  // Auto total if missing
   if(!s.minutesTotal){
     s.minutesTotal = s.tech.minutes + s.theory.minutes + s.rep.minutes;
   }
@@ -425,7 +406,7 @@ function addSession(payload){
   const st = DB.instruments[s.instrumentId];
   if(st) st.lastStudiedAt = s.at;
 
-  computeCaches();
+  computeCaches({ persist:false });
   DB.sessions.sort((a,b) => new Date(b.at) - new Date(a.at));
   saveDB();
   return s;
@@ -435,7 +416,7 @@ function deleteSession(id){
   const idx = DB.sessions.findIndex(x => x.id === id);
   if(idx >= 0){
     DB.sessions.splice(idx, 1);
-    computeCaches();
+    computeCaches({ persist:false });
     saveDB();
     return true;
   }
@@ -451,7 +432,7 @@ function clearAllSessions(){
   });
   DB.ui.lastPickId = null;
   DB.ui.lastPickedAt = null;
-  computeCaches();
+  computeCaches({ persist:false });
   saveDB();
 }
 
@@ -460,7 +441,7 @@ function clearAllSessions(){
 ========================= */
 
 function renderDashboard(){
-  computeCaches();
+  computeCaches({ persist:false });
 
   const m30 = totalMinutes(30);
   const s30 = totalSessions(30);
@@ -483,7 +464,6 @@ function renderDashboard(){
   if(kpiStreak) kpiStreak.textContent = `${streak} día(s)`;
   if(kpiStreakMeta) kpiStreakMeta.textContent = streak ? 'Sosteniendo el hábito' : 'Arranquen hoy con 10 min';
 
-  // Most forgotten (max days since)
   let maxD = -1, maxId = null;
   for(const i of INSTRUMENTS){
     const st = DB.instruments[i.id];
@@ -496,7 +476,6 @@ function renderDashboard(){
     kpiForgot.textContent = meta ? `${meta.icon} ${meta.name} · ${maxD}d` : '—';
   }
 
-  // Component distribution (30d)
   const bars = $('#compBars');
   if(bars){
     const comps = componentTotals(30);
@@ -506,16 +485,23 @@ function renderDashboard(){
     const pRep  = 100 - pTech - pTheo;
 
     bars.innerHTML = `
-      <div class="progress" title="Técnico ${pTech}%"><i style="--w:${pTech}%"></i></div>
-      <div class="progress" title="Teórico ${pTheo}%"><i style="--w:${pTheo}%"></i></div>
-      <div class="progress" title="Repertorio ${pRep}%"><i style="--w:${pRep}%"></i></div>
+      <div class="bar">
+        <div class="bar__row"><span class="bar__label">Técnico</span><span class="bar__value">${pTech}%</span></div>
+        <div class="progress"><i style="--w:${pTech}%"></i></div>
+      </div>
+      <div class="bar">
+        <div class="bar__row"><span class="bar__label">Teórico</span><span class="bar__value">${pTheo}%</span></div>
+        <div class="progress"><i style="--w:${pTheo}%"></i></div>
+      </div>
+      <div class="bar">
+        <div class="bar__row"><span class="bar__label">Repertorio</span><span class="bar__value">${pRep}%</span></div>
+        <div class="progress"><i style="--w:${pRep}%"></i></div>
+      </div>
     `;
   }
 
-  // Top instruments (30d)
   const topRank = $('#topRank');
   if(topRank){
-    // compute minutes per instrument in 30d
     const from = startOfWindow(30);
     const m = {};
     INSTRUMENTS.forEach(i => m[i.id] = 0);
@@ -531,22 +517,23 @@ function renderDashboard(){
       .slice(0, 5);
 
     if(!top.length || top.every(x => x.minutes === 0)){
-      topRank.innerHTML = `<div class="muted" style="padding:8px 0;">Aún no hay un “top”. Estudien para que exista.</div>`;
+      topRank.innerHTML = `<div class="muted" style="padding:8px 0;">Aún no hay un “top”. Háganse el favor y estudien 😌</div>`;
     }else{
       topRank.innerHTML = top.map((x, idx) => `
-        <div class="rank__row">
-          <div class="rank__left">
-            <span class="rank__num">${idx+1}</span>
-            <span class="rank__badge" style="background: linear-gradient(135deg, ${x.meta.color}, var(--p6));">${esc(x.meta.icon)}</span>
-            <span class="rank__name">${esc(x.meta.name)}</span>
+        <div class="rank__item">
+          <div class="rank__left" style="min-width:0">
+            <span class="rank__badge" style="background: linear-gradient(135deg, ${x.meta.color}, var(--p6));">${idx+1}</span>
+            <div style="min-width:0">
+              <div class="rank__name">${esc(x.meta.icon)} ${esc(x.meta.name)}</div>
+              <div class="rank__meta">Últimos 30 días</div>
+            </div>
           </div>
-          <div class="rank__right">${fmtMinutes(x.minutes)}</div>
+          <div class="rank__meta" style="font-weight:950">${fmtMinutes(x.minutes)}</div>
         </div>
       `).join('');
     }
   }
 
-  // Availability chips
   renderAvailChips();
 }
 
@@ -580,7 +567,7 @@ function renderAvailChips(){
       DB.instruments[id].available = !DB.instruments[id].available;
       saveDB();
       renderAvailChips();
-      renderNextCard(null); // if availability changed, next suggestion may change
+      renderNextCard(null);
     });
   });
 
@@ -605,12 +592,24 @@ function renderAvailChips(){
 
 let NEXT_SELECTED_ID = null;
 
+function isValidNextId(id){
+  if(!id) return false;
+  const st = DB.instruments[id];
+  if(!st) return false;
+  if(st.archived) return false;
+  // “Next” puede sugerir algo aunque luego lo desmarquen disponible, pero si está NO disponible, mejor invalidarlo
+  if(!st.available) return false;
+  return true;
+}
+
 function renderNextCard(chosenId=null){
   const box = $('#nextResult');
   if(!box) return;
 
   const btnLog = $('#logFromNextBtn');
   const btnTimer = $('#startTimerBtn');
+
+  if(chosenId && !isValidNextId(chosenId)) chosenId = null;
 
   if(!chosenId){
     NEXT_SELECTED_ID = null;
@@ -692,7 +691,6 @@ function bindNext(){
     });
   }
 
-  // Home quick button jumps to Next and picks
   if(quickHome && !quickHome.dataset.bound){
     quickHome.dataset.bound = '1';
     quickHome.addEventListener('click', () => {
@@ -708,7 +706,6 @@ function bindNext(){
     });
   }
 
-  // From Next: prefill log form
   if(logFrom && !logFrom.dataset.bound){
     logFrom.dataset.bound = '1';
     logFrom.addEventListener('click', () => {
@@ -719,14 +716,13 @@ function bindNext(){
     });
   }
 
-  // From Next: start timer + go log
   if(startTimer && !startTimer.dataset.bound){
     startTimer.dataset.bound = '1';
     startTimer.addEventListener('click', () => {
       if(!NEXT_SELECTED_ID) return;
       setActiveView('log');
       prefillLog({ instrumentId: NEXT_SELECTED_ID });
-      timerStart(); // start immediately
+      timerStart();
       toast('Cronómetro', 'Corriendo. Tú solo estudia.');
     });
   }
@@ -745,17 +741,23 @@ function fillInstrumentSelects(){
     .map(i => `<option value="${esc(i.id)}">${esc(i.icon)} ${esc(i.name)}</option>`)
     .join('');
 
-  if(sel){
-    sel.innerHTML = options;
-  }
+  if(sel) sel.innerHTML = options;
 
   if(filter){
     filter.innerHTML = `<option value="all">Todos</option>` + options;
   }
+
+  // Who filter: auto-detect names from sessions
+  const whoSel = $('#filterWho');
+  if(whoSel){
+    const whos = Array.from(new Set(DB.sessions.map(s => String(s.who||'').trim()).filter(Boolean))).sort();
+    const cur = whoSel.value || 'all';
+    whoSel.innerHTML = `<option value="all">Todos</option>` + whos.map(w => `<option value="${esc(w)}">${esc(w)}</option>`).join('');
+    if([...whoSel.options].some(o => o.value === cur)) whoSel.value = cur;
+  }
 }
 
 function prefillLog({ instrumentId=null } = {}){
-  const who = $('#who');
   const inst = $('#instrumentSelect');
   const date = $('#date');
   const total = $('#totalMin');
@@ -763,33 +765,27 @@ function prefillLog({ instrumentId=null } = {}){
   if(date) date.value = todayISO();
   if(inst && instrumentId) inst.value = instrumentId;
 
-  // leave who as is
   if(total && (!total.value || safeInt(total.value) <= 0)) total.value = 20;
 
-  // Default split (nice habit)
   const t = $('#techMin'); const th = $('#theoryMin'); const r = $('#repMin');
   if(t && th && r){
     const tot = safeInt(total?.value || 20) || 20;
-    // 50/25/25
     t.value = Math.round(tot * 0.5);
     th.value = Math.round(tot * 0.25);
     r.value = Math.max(0, tot - safeInt(t.value) - safeInt(th.value));
   }
 
-  // Clear notes/tags
   ['techNotes','theoryNotes','repNotes','tags'].forEach(id => {
     const el = $('#' + id);
     if(el) el.value = '';
   });
 
-  // Mood UI
   const mood = $('#mood');
   const moodPill = $('#moodPill');
   if(mood && moodPill) moodPill.textContent = String(mood.value || 4);
 }
 
 function readDifficulty(){
-  // radios: diffEasy/diffOk/diffHard
   const r = $('input[name="diff"]:checked');
   return r ? r.value : 'easy';
 }
@@ -840,7 +836,6 @@ function bindLog(){
           ? tagsRaw.split(',').map(x => x.trim()).filter(Boolean).slice(0, 20)
           : [];
 
-        // “at” real: date + current time (so sorting feels right)
         const now = new Date();
         const at = new Date(date + 'T' + String(now.toTimeString()).slice(0,8));
 
@@ -860,10 +855,7 @@ function bindLog(){
         confettiBurst();
         toast('Sesión guardada', 'Menos procrastinación, más poder 😌🎶');
 
-        // Update views
         renderAll();
-
-        // keep in log view, but gently reset for next entry
         prefillLog({ instrumentId });
 
       }catch(err){
@@ -879,12 +871,12 @@ const TIMER_STORE_KEY = 'ipt_timer_v1';
 
 let TIMER = {
   running: false,
-  startEpoch: null,     // Date.now() cuando se inicia
-  elapsedMs: 0,         // acumulado al pausar
-  tickId: null,         // setInterval
-  plan: null,           // [{key,label,ms,atEpoch}]
+  startEpoch: null,
+  elapsedMs: 0,
+  tickId: null,
+  plan: null,
   planIndex: 0,
-  notifEnabled: true,   // puedes poner false si no quieres pedir permisos
+  notifEnabled: true,
 };
 
 function fmtClock(ms){
@@ -924,7 +916,7 @@ function timerRestore(){
     TIMER.elapsedMs = Number(p.elapsedMs || 0);
     TIMER.plan = Array.isArray(p.plan) ? p.plan : null;
     TIMER.planIndex = Number(p.planIndex || 0);
-    TIMER.notifEnabled = (p.notifEnabled !== false); // default true
+    TIMER.notifEnabled = (p.notifEnabled !== false);
   }catch(_){}
 }
 
@@ -958,7 +950,6 @@ function timerStartTick(){
     timerPersist();
   }, 250);
 }
-
 function timerStopTick(){
   if(TIMER.tickId){
     clearInterval(TIMER.tickId);
@@ -975,13 +966,9 @@ async function ensureNotifications(){
 }
 
 async function fireAlarm(title, body){
-  // 1) Toast en-app
   toast(title, body);
-
-  // 2) Vibración (Android normalmente sí)
   try{ navigator.vibrate?.([120, 90, 120]); }catch(_){}
 
-  // 3) Notificación (si se puede y está habilitado)
   if(!TIMER.notifEnabled) return;
 
   const ok = await ensureNotifications();
@@ -1021,7 +1008,6 @@ function buildPlanFromCurrentInputs(){
 }
 
 function timerInitPlanIfNeeded(){
-  // Solo arma plan si estamos arrancando “desde cero”
   if(timerElapsedMs() > 0) return;
 
   TIMER.plan = buildPlanFromCurrentInputs();
@@ -1031,7 +1017,6 @@ function timerInitPlanIfNeeded(){
     const order = TIMER.plan.map(x => x.label).join(' → ');
     toast('Plan de estudio activo', order);
   }else{
-    // No plan, no pasa nada: solo cronómetro.
     TIMER.plan = null;
     TIMER.planIndex = 0;
   }
@@ -1043,7 +1028,6 @@ function timerCheckPlan(){
 
   const now = timerNow();
 
-  // Catch-up si el navegador “durmió”
   while(TIMER.planIndex < TIMER.plan.length && now >= TIMER.plan[TIMER.planIndex].atEpoch){
     const cur = TIMER.plan[TIMER.planIndex];
     TIMER.planIndex++;
@@ -1061,7 +1045,6 @@ function timerStart(){
   if(TIMER.running) return;
 
   timerInitPlanIfNeeded();
-
   TIMER.running = true;
   TIMER.startEpoch = timerNow();
 
@@ -1131,30 +1114,26 @@ function bindTimer(){
     bApply.addEventListener('click', timerApply);
   }
 
-  // Restore + render initial
   timerRestore();
   timerSetButtons();
   timerRender();
 
-  // Si quedó corriendo, reanuda tick (sin perder tiempo real)
   if(TIMER.running){
     timerStartTick();
     timerCheckPlan();
   }
 
-  // Cuando vuelve de background, refresca y chequea alarmas
   document.addEventListener('visibilitychange', () => {
     timerRender();
     timerCheckPlan();
     timerPersist();
   });
 
-  // Persist final por si el navegador decide morir
   window.addEventListener('beforeunload', () => timerPersist());
 }
 
 /* =========================
-   History view: filters + list
+   History view: filters + list (AGRUPADO)
 ========================= */
 
 function bindHistory(){
@@ -1199,6 +1178,15 @@ function bindHistory(){
   }
 }
 
+function fmtDateNice(iso){
+  try{
+    const d = new Date(iso + 'T12:00:00');
+    return d.toLocaleDateString([], { weekday:'short', year:'numeric', month:'short', day:'2-digit' });
+  }catch(_){
+    return iso;
+  }
+}
+
 function renderHistory(){
   const list = $('#historyList');
   const empty = $('#historyEmpty');
@@ -1236,50 +1224,86 @@ function renderHistory(){
   }
   if(empty) empty.hidden = true;
 
-  list.innerHTML = filtered.slice(0, 200).map(s => {
-    const meta = instrumentMeta(s.instrumentId);
-    const dt = new Date(s.at);
-    const when = dt.toLocaleString([], { year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  // Agrupar por fecha (YYYY-MM-DD)
+  const groups = new Map();
+  for(const s of filtered.slice(0, 300)){
+    const key = s.date || String(s.at).slice(0,10);
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
 
-    const tech = Number(s.tech?.minutes||0);
-    const theo = Number(s.theory?.minutes||0);
-    const rep  = Number(s.rep?.minutes||0);
+  // Orden: fechas desc (ya vienen desc, pero por si acaso)
+  const keys = Array.from(groups.keys()).sort((a,b) => b.localeCompare(a));
 
-    const tags = (s.tags && s.tags.length)
-      ? `<div class="tags">${s.tags.slice(0,8).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`
-      : '';
+  list.innerHTML = keys.map(dateKey => {
+    const items = groups.get(dateKey) || [];
+    const totalMin = items.reduce((acc, s) => acc + Number(s.minutesTotal || 0), 0);
 
-    const notesLine = [
-      tech ? `🎯 ${tech}m` : '',
-      theo ? `🧠 ${theo}m` : '',
-      rep ? `🎵 ${rep}m` : '',
-      `Mood ${'⭐'.repeat(s.mood||4)}`,
-      s.difficulty ? `· ${esc(s.difficulty)}` : ''
-    ].filter(Boolean).join(' · ');
+    const body = items.map(s => {
+      const meta = instrumentMeta(s.instrumentId);
+      const dt = new Date(s.at);
+      const when = dt.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
 
-    const extraNotes = [
-      s.tech?.notes ? `🎯 ${esc(s.tech.notes)}` : '',
-      s.theory?.notes ? `🧠 ${esc(s.theory.notes)}` : '',
-      s.rep?.notes ? `🎵 ${esc(s.rep.notes)}` : '',
-    ].filter(Boolean);
+      const tech = Number(s.tech?.minutes||0);
+      const theo = Number(s.theory?.minutes||0);
+      const rep  = Number(s.rep?.minutes||0);
 
-    return `
-      <div class="item">
-        <div class="item__left" style="min-width:0">
-          <div class="badge" style="background: linear-gradient(135deg, ${meta?.color || 'var(--p2)'}, var(--p6));">
-            ${esc(meta?.icon || '🎵')}
+      const extraNotes = [
+        s.tech?.notes ? `🎯 ${esc(s.tech.notes)}` : '',
+        s.theory?.notes ? `🧠 ${esc(s.theory.notes)}` : '',
+        s.rep?.notes ? `🎵 ${esc(s.rep.notes)}` : '',
+      ].filter(Boolean);
+
+      const stars = '⭐'.repeat(clamp(s.mood||4,1,5));
+      const diff = s.difficulty ? esc(s.difficulty) : 'easy';
+
+      return `
+        <div class="item">
+          <div class="item__left" style="min-width:0">
+            <div class="badge" style="background: linear-gradient(135deg, ${meta?.color || 'var(--p2)'}, var(--p6));">
+              ${esc(meta?.icon || '🎵')}
+            </div>
+            <div style="min-width:0">
+              <div class="item__title">${esc(meta?.name || '—')} · ${fmtMinutes(s.minutesTotal)} <span class="muted small">· ${esc(s.who || '')}</span></div>
+              <div class="item__sub">${esc(when)} · 🎯 ${tech}m · 🧠 ${theo}m · 🎵 ${rep}m · ${stars} · ${diff}</div>
+
+              ${s.tags?.length ? `
+                <div class="item__details">
+                  <div class="detail">
+                    <span class="detail__tag">🏷️ Tags</span>
+                    <span class="detail__text">${esc(s.tags.slice(0, 10).join(', '))}</span>
+                  </div>
+                </div>
+              ` : ''}
+
+              ${extraNotes.length ? `
+                <div class="item__details">
+                  <div class="detail">
+                    <span class="detail__tag">📝 Notas</span>
+                    <span class="detail__text">${extraNotes.join(' · ')}</span>
+                  </div>
+                </div>
+              ` : ''}
+            </div>
           </div>
-          <div style="min-width:0">
-            <div class="item__title">${esc(meta?.name || '—')} · ${fmtMinutes(s.minutesTotal)} <span class="muted small">· ${esc(s.who || '')}</span></div>
-            <div class="item__sub">${esc(when)} · ${notesLine}</div>
-            ${tags}
-            ${extraNotes.length ? `<div class="item__sub" title="Notas">${extraNotes.join(' · ')}</div>` : ''}
+
+          <div class="item__right">
+            <button class="btn btn--ghost" type="button" data-del="${esc(s.id)}">
+              <span class="btn__icon" aria-hidden="true">🗑️</span> Borrar
+            </button>
           </div>
         </div>
-        <div class="item__right">
-          <button class="btn btn--ghost" type="button" data-del="${esc(s.id)}">
-            <span class="btn__icon" aria-hidden="true">🗑️</span> Borrar
-          </button>
+      `;
+    }).join('');
+
+    return `
+      <div class="history-group">
+        <div class="history-group__head">
+          <div class="history-group__date">📅 ${esc(fmtDateNice(dateKey))}</div>
+          <div class="history-group__meta">${items.length} sesión(es) · ${fmtMinutes(totalMin)}</div>
+        </div>
+        <div class="history-group__body">
+          ${body}
         </div>
       </div>
     `;
@@ -1310,7 +1334,7 @@ function renderInstruments(){
   const availCount = INSTRUMENTS.filter(i => !DB.instruments[i.id]?.archived && DB.instruments[i.id]?.available).length;
   if(summary) summary.textContent = `${activeCount} activos · ${availCount} disponibles hoy`;
 
-  const html = INSTRUMENTS.map(i => {
+  wrap.innerHTML = INSTRUMENTS.map(i => {
     const st = DB.instruments[i.id];
     const w = clamp(DB.settings.weights[i.id] ?? 2, 0, 5);
     const mult = weightToMultiplier(w);
@@ -1319,55 +1343,61 @@ function renderInstruments(){
     const availLabel = st.available ? 'Disponible' : 'No disponible';
 
     return `
-      <div class="item ${st.archived ? 'is-archived' : ''}">
+      <div class="item">
         <div class="item__left" style="min-width:0">
           <div class="badge" style="background: linear-gradient(135deg, ${i.color}, var(--p6));">
             ${esc(i.icon)}
           </div>
-          <div style="min-width:0">
+          <div style="min-width:0; width:100%">
             <div class="item__title">${esc(i.name)} <span class="muted small">· ${esc(i.type)}</span></div>
-            <div class="item__sub">${availLabel} · Última vez: ${last} · 30 días: ${fmtMinutes(st.minutesMonth||0)}</div>
+            <div class="item__sub">${st.archived ? 'Archivado' : availLabel} · Última vez: ${last} · 30 días: ${fmtMinutes(st.minutesMonth||0)}</div>
 
-            <div class="row" style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px;">
-              <span class="toggle">
-                <span class="muted small">A la mano</span>
-                <span class="switch ${st.available ? 'is-on' : ''}" data-toggle="${esc(i.id)}" role="button" aria-label="toggle availability"></span>
-              </span>
-
-              <span class="muted small">Prioridad</span>
-              <input class="select" data-weight="${esc(i.id)}" type="range" min="0" max="5" step="1" value="${w}" style="max-width:180px; padding:0; height:38px;">
-              <span class="btn__pill" data-weightpill="${esc(i.id)}">${mult}x</span>
+            <div class="actions" style="margin-top:10px;">
+              <button class="btn ${st.available ? 'btn--soft' : 'btn--ghost'}" type="button" data-toggle="${esc(i.id)}">
+                <span class="btn__icon" aria-hidden="true">${st.available ? '✅' : '⏸️'}</span>
+                A la mano
+              </button>
 
               <button class="btn btn--ghost" type="button" data-archive="${esc(i.id)}">
                 <span class="btn__icon" aria-hidden="true">${st.archived ? '📦' : '🗄️'}</span>
                 ${st.archived ? 'Activar' : 'Archivar'}
               </button>
+
+              <span class="pillstat pillstat--diff" title="Multiplicador">
+                <i>Prioridad</i> <b data-weightpill="${esc(i.id)}">${mult}x</b>
+              </span>
             </div>
 
-            <label class="field" style="margin-top:10px;">
-              <span class="muted small">Condición</span>
-              <input class="input" data-cond="${esc(i.id)}" placeholder="Ej: solo con audífonos / solo finde / etc." value="${esc(st.condition||'')}">
-            </label>
+            <div class="field" style="margin-top:10px;">
+              <span>Prioridad (0–5)</span>
+              <input data-weight="${esc(i.id)}" type="range" min="0" max="5" step="1" value="${w}">
+            </div>
+
+            <div class="field" style="margin-top:10px;">
+              <span>Condición</span>
+              <input type="text" data-cond="${esc(i.id)}" placeholder="Ej: solo con audífonos / solo finde / etc." value="${esc(st.condition||'')}">
+            </div>
           </div>
         </div>
       </div>
     `;
   }).join('');
 
-  wrap.innerHTML = html;
-
-  // Toggle availability
-  $$('[data-toggle]', wrap).forEach(sw => {
-    sw.addEventListener('click', () => {
-      const id = sw.getAttribute('data-toggle');
+  $$('[data-toggle]', wrap).forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-toggle');
       DB.instruments[id].available = !DB.instruments[id].available;
+
+      // si está archivado, no debería quedar disponible
+      if(DB.instruments[id].archived) DB.instruments[id].available = false;
+
       saveDB();
       renderInstruments();
       renderAvailChips();
+      renderNextCard(null);
     });
   });
 
-  // Weight slider
   $$('[data-weight]', wrap).forEach(r => {
     r.addEventListener('input', () => {
       const id = r.getAttribute('data-weight');
@@ -1379,23 +1409,19 @@ function renderInstruments(){
     });
   });
 
-  // Archive
   $$('[data-archive]', wrap).forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-archive');
       DB.instruments[id].archived = !DB.instruments[id].archived;
-
-      // If archived, also set unavailable (cleaner picker)
       if(DB.instruments[id].archived) DB.instruments[id].available = false;
 
       saveDB();
       fillInstrumentSelects();
-      computeCaches();
+      computeCaches({ persist:false });
       renderAll();
     });
   });
 
-  // Condition input (debounced)
   let condTimer = null;
   $$('[data-cond]', wrap).forEach(inp => {
     inp.addEventListener('input', () => {
@@ -1408,7 +1434,6 @@ function renderInstruments(){
     });
   });
 
-  // Settings toggles
   const toggleRepeat = $('#toggleRepeat');
   const toggleConfetti = $('#toggleConfetti');
 
@@ -1458,7 +1483,7 @@ async function restoreBackup(file){
   const db = normalizeDB(JSON.parse(txt));
   DB = db;
   saveDB();
-  computeCaches();
+  computeCaches({ persist:false });
   renderAll();
   toast('Restaurado', 'Tu backup volvió de la muerte.');
 }
@@ -1470,7 +1495,7 @@ async function restoreBackup(file){
 function renderAll(){
   fillInstrumentSelects();
   renderDashboard();
-  renderNextCard(NEXT_SELECTED_ID); // keep if already chosen, but may be invalid now
+  renderNextCard(isValidNextId(NEXT_SELECTED_ID) ? NEXT_SELECTED_ID : null);
   renderHistory();
   renderInstruments();
 }
@@ -1480,31 +1505,22 @@ function renderAll(){
 ========================= */
 
 function init(){
-  // PWA
   setupInstallPrompt({ installBtnEl: $('#installBtn') });
   registerServiceWorker('./sw.js').catch(() => {});
 
   window.addEventListener('offline', () => toast('Offline', 'Sigue funcionando. Tu internet puede descansar.'));
   window.addEventListener('online',  () => toast('Online', 'Volvimos al mundo real.'));
 
-  // Navigation
   bindNav();
-
-  // Populate selects
   fillInstrumentSelects();
-
-  // Next view
   bindNext();
 
-  // Log + Timer
   prefillLog();
   bindLog();
   bindTimer();
 
-  // History
   bindHistory();
 
-  // Backup / Restore
   const backupBtn = $('#backupBtn');
   const restoreBtn = $('#restoreBtn');
   const restoreFile = $('#restoreFile');
@@ -1521,7 +1537,7 @@ function init(){
       if(!f) return;
       try{
         await restoreBackup(f);
-      }catch(err){
+      }catch(_){
         toast('Restore falló', 'Ese JSON está raro o corrupto.');
       }finally{
         restoreFile.value = '';
@@ -1529,11 +1545,8 @@ function init(){
     });
   }
 
-  // Initial render
-  computeCaches();
+  computeCaches({ persist:false });
   renderAll();
-
-  // Default view
   setActiveView('home');
 }
 

@@ -21,15 +21,13 @@
   <link rel="manifest" href="./manifest.webmanifest" />
 
   <!-- Favicons / Icons -->
-  <!-- (Recomendado) favicon básico -->
   <link rel="icon" href="./icons/icon-192.png" type="image/png" />
-  <!-- iOS Home Screen -->
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Instrument Tracker" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <!-- Windows tiles (opcional pero ok) -->
+  <!-- Windows tiles (optional) -->
   <meta name="msapplication-TileColor" content="#6d28d9" />
   <meta name="msapplication-config" content="none" />
 
@@ -39,15 +37,12 @@
   <meta property="og:title" content="Instrument Tracker" />
   <meta property="og:description" content="Registro de estudio musical equitativo, visual y offline." />
   <meta property="og:type" content="website" />
-  <!-- Si luego hacen una imagen OG, activen esto:
-  <meta property="og:image" content="./assets/og.png" />
-  -->
+  <!-- <meta property="og:image" content="./assets/og.png" /> -->
 
   <!-- =========================
        STYLES
   ========================== -->
   <link rel="stylesheet" href="./styles.css" />
-
 </head>
 
 <body>
@@ -96,19 +91,19 @@
   <main id="main" class="app" role="main" tabindex="-1">
     <!-- Tabs -->
     <nav class="tabs" aria-label="Navegación principal">
-      <button class="tab is-active" data-view="home" type="button" aria-controls="view-home">
+      <button class="tab is-active" data-view="home" type="button" aria-controls="view-home" aria-selected="true">
         <span aria-hidden="true">🏠</span> Inicio
       </button>
-      <button class="tab" data-view="next" type="button" aria-controls="view-next">
+      <button class="tab" data-view="next" type="button" aria-controls="view-next" aria-selected="false">
         <span aria-hidden="true">🎲</span> Qué sigue
       </button>
-      <button class="tab" data-view="log" type="button" aria-controls="view-log">
+      <button class="tab" data-view="log" type="button" aria-controls="view-log" aria-selected="false">
         <span aria-hidden="true">➕</span> Registrar
       </button>
-      <button class="tab" data-view="history" type="button" aria-controls="view-history">
+      <button class="tab" data-view="history" type="button" aria-controls="view-history" aria-selected="false">
         <span aria-hidden="true">🗂️</span> Historial
       </button>
-      <button class="tab" data-view="instruments" type="button" aria-controls="view-instruments">
+      <button class="tab" data-view="instruments" type="button" aria-controls="view-instruments" aria-selected="false">
         <span aria-hidden="true">🎛️</span> Instrumentos
       </button>
     </nav>
@@ -139,7 +134,6 @@
             </div>
           </div>
 
-          <!-- KPIs (alineados con app.js nuevo) -->
           <div class="kpis">
             <div class="kpi">
               <div class="kpi__label">Últimos 7 días</div>
@@ -301,6 +295,7 @@
     ========================== -->
     <section class="view" id="view-log" data-view="log" aria-label="Registrar sesión">
       <div class="grid grid--2">
+        <!-- LOG FORM -->
         <div class="card">
           <div class="card__head">
             <div>
@@ -400,8 +395,25 @@
               </button>
             </div>
           </form>
+
+          <!-- ✅ Preview: Última sesión (para saber con qué continuar) -->
+          <section class="card last-session" id="lastSessionCard" aria-live="polite" style="margin-top:14px;">
+            <div class="card__head" style="margin-bottom:10px;">
+              <h3 class="card__title" style="margin:0;">Última sesión</h3>
+              <div class="card__actions">
+                <button class="btn btn--ghost" type="button" id="continueLastBtn" title="Prefill con lo último">
+                  Continuar
+                </button>
+              </div>
+            </div>
+
+            <div id="lastSessionBody" class="last-session__body">
+              <div class="muted">Aún no hay sesiones registradas.</div>
+            </div>
+          </section>
         </div>
 
+        <!-- TIMER -->
         <div class="card">
           <div class="card__head">
             <div>
@@ -494,6 +506,7 @@
           </button>
         </div>
 
+        <!-- aquí app.js renderiza grupos por día + tarjetas -->
         <div class="list" id="historyList"></div>
 
         <div class="empty" id="historyEmpty" hidden>
