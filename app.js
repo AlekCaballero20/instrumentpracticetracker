@@ -3,6 +3,12 @@
   - Dashboard + Next picker + Log + History filters + Instruments manager
   - Compatible con DB vieja (migra y no rompe)
   - PWA wiring desde pwa.js
+
+  ✅ FIX 2026-03-03:
+  - Timer robusto en background (Date.now, no rAF)
+  - Persistencia del timer (no se “pierde” al bloquear pantalla)
+  - Alarmas por bloques (Técnico → Teórico → Repertorio) según el Log
+  - Notificación + vibración + toast (cuando el navegador lo permita)
 ============================================================================= */
 
 'use strict';
@@ -867,13 +873,18 @@ function bindLog(){
   }
 }
 
-/* ---- Timer ---- */
+/* ---- Timer (robusto + alarmas) ---- */
+
+const TIMER_STORE_KEY = 'ipt_timer_v1';
 
 let TIMER = {
   running: false,
-  startedAt: null,
-  elapsedMs: 0,
-  raf: null
+  startEpoch: null,     // Date.now() cuando se inicia
+  elapsedMs: 0,         // acumulado al pausar
+  tickId: null,         // setInterval
+  plan: null,           // [{key,label,ms,atEpoch}]
+  planIndex: 0,
+  notifEnabled: true,   // puedes poner false si no quieres pedir permisos
 };
 
 function fmtClock(ms){
@@ -882,81 +893,217 @@ function fmtClock(ms){
   const ss = s % 60;
   return `${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
 }
+function timerNow(){ return Date.now(); }
 
-function timerTick(){
+function timerElapsedMs(){
+  if(!TIMER.running) return TIMER.elapsedMs;
+  return TIMER.elapsedMs + (timerNow() - TIMER.startEpoch);
+}
+
+function timerPersist(){
+  try{
+    const payload = {
+      running: TIMER.running,
+      startEpoch: TIMER.startEpoch,
+      elapsedMs: TIMER.elapsedMs,
+      plan: TIMER.plan,
+      planIndex: TIMER.planIndex,
+      notifEnabled: TIMER.notifEnabled,
+    };
+    localStorage.setItem(TIMER_STORE_KEY, JSON.stringify(payload));
+  }catch(_){}
+}
+
+function timerRestore(){
+  try{
+    const raw = localStorage.getItem(TIMER_STORE_KEY);
+    if(!raw) return;
+    const p = JSON.parse(raw);
+    TIMER.running = !!p.running;
+    TIMER.startEpoch = (typeof p.startEpoch === 'number') ? p.startEpoch : null;
+    TIMER.elapsedMs = Number(p.elapsedMs || 0);
+    TIMER.plan = Array.isArray(p.plan) ? p.plan : null;
+    TIMER.planIndex = Number(p.planIndex || 0);
+    TIMER.notifEnabled = (p.notifEnabled !== false); // default true
+  }catch(_){}
+}
+
+function timerRender(){
   const clock = $('#timerClock');
   const status = $('#timerStatus');
-  if(!TIMER.running) return;
+  const ms = timerElapsedMs();
 
-  const now = performance.now();
-  const ms = TIMER.elapsedMs + (now - TIMER.startedAt);
   if(clock) clock.textContent = fmtClock(ms);
-  if(status) status.textContent = 'Corriendo…';
 
-  TIMER.raf = requestAnimationFrame(timerTick);
+  if(status){
+    if(TIMER.running) status.textContent = 'Corriendo…';
+    else status.textContent = (ms > 0) ? 'Pausado. Puedes aplicar.' : 'Listo.';
+  }
+}
+
+function timerSetButtons(){
+  const b1 = $('#timerStart');
+  const b2 = $('#timerStop');
+  const b3 = $('#timerApply');
+  if(b1) b1.disabled = TIMER.running;
+  if(b2) b2.disabled = !TIMER.running;
+  if(b3) b3.disabled = TIMER.running || (timerElapsedMs() <= 0);
+}
+
+function timerStartTick(){
+  timerStopTick();
+  TIMER.tickId = setInterval(() => {
+    timerRender();
+    timerCheckPlan();
+    timerPersist();
+  }, 250);
+}
+
+function timerStopTick(){
+  if(TIMER.tickId){
+    clearInterval(TIMER.tickId);
+    TIMER.tickId = null;
+  }
+}
+
+async function ensureNotifications(){
+  if(!('Notification' in window)) return false;
+  if(Notification.permission === 'granted') return true;
+  if(Notification.permission === 'denied') return false;
+  const perm = await Notification.requestPermission();
+  return perm === 'granted';
+}
+
+async function fireAlarm(title, body){
+  // 1) Toast en-app
+  toast(title, body);
+
+  // 2) Vibración (Android normalmente sí)
+  try{ navigator.vibrate?.([120, 90, 120]); }catch(_){}
+
+  // 3) Notificación (si se puede y está habilitado)
+  if(!TIMER.notifEnabled) return;
+
+  const ok = await ensureNotifications();
+  if(!ok) return;
+
+  try{
+    const reg = await navigator.serviceWorker?.ready;
+    if(reg?.showNotification){
+      reg.showNotification(title, { body, tag:'ipt-timer', renotify:true });
+    }else{
+      new Notification(title, { body });
+    }
+  }catch(_){}
+}
+
+function buildPlanFromCurrentInputs(){
+  const tech = Math.max(0, Number($('#techMin')?.value || 0));
+  const theory = Math.max(0, Number($('#theoryMin')?.value || 0));
+  const rep = Math.max(0, Number($('#repMin')?.value || 0));
+
+  const segments = [
+    { key:'tech', label:'Técnico', min: tech },
+    { key:'theory', label:'Teórico', min: theory },
+    { key:'rep', label:'Repertorio', min: rep },
+  ].filter(x => x.min > 0);
+
+  if(!segments.length) return null;
+
+  const start = timerNow();
+  let acc = 0;
+  const plan = segments.map(seg => {
+    acc += seg.min * 60 * 1000;
+    return { key: seg.key, label: seg.label, ms: seg.min * 60 * 1000, atEpoch: start + acc };
+  });
+
+  return plan;
+}
+
+function timerInitPlanIfNeeded(){
+  // Solo arma plan si estamos arrancando “desde cero”
+  if(timerElapsedMs() > 0) return;
+
+  TIMER.plan = buildPlanFromCurrentInputs();
+  TIMER.planIndex = 0;
+
+  if(TIMER.plan?.length){
+    const order = TIMER.plan.map(x => x.label).join(' → ');
+    toast('Plan de estudio activo', order);
+  }else{
+    // No plan, no pasa nada: solo cronómetro.
+    TIMER.plan = null;
+    TIMER.planIndex = 0;
+  }
+}
+
+function timerCheckPlan(){
+  if(!TIMER.running) return;
+  if(!TIMER.plan?.length) return;
+
+  const now = timerNow();
+
+  // Catch-up si el navegador “durmió”
+  while(TIMER.planIndex < TIMER.plan.length && now >= TIMER.plan[TIMER.planIndex].atEpoch){
+    const cur = TIMER.plan[TIMER.planIndex];
+    TIMER.planIndex++;
+
+    const next = TIMER.plan[TIMER.planIndex];
+    if(next){
+      fireAlarm('Cambio de bloque ✅', `Listo: ${cur.label}. Ahora: ${next.label}.`);
+    }else{
+      fireAlarm('Sesión terminada 🧠🎶', `Listo: ${cur.label}. Ya completaste tu plan.`);
+    }
+  }
 }
 
 function timerStart(){
   if(TIMER.running) return;
+
+  timerInitPlanIfNeeded();
+
   TIMER.running = true;
-  TIMER.startedAt = performance.now();
-  TIMER.raf = requestAnimationFrame(timerTick);
+  TIMER.startEpoch = timerNow();
 
-  const b1 = $('#timerStart');
-  const b2 = $('#timerStop');
-  const b3 = $('#timerApply');
-  if(b1) b1.disabled = true;
-  if(b2) b2.disabled = false;
-  if(b3) b3.disabled = true;
-
-  const status = $('#timerStatus');
-  if(status) status.textContent = 'Corriendo…';
+  timerSetButtons();
+  timerStartTick();
+  timerRender();
+  timerPersist();
 }
 
 function timerStop(){
   if(!TIMER.running) return;
+
+  TIMER.elapsedMs = timerElapsedMs();
   TIMER.running = false;
+  TIMER.startEpoch = null;
 
-  const now = performance.now();
-  TIMER.elapsedMs += (now - TIMER.startedAt);
-  TIMER.startedAt = null;
-
-  if(TIMER.raf) cancelAnimationFrame(TIMER.raf);
-  TIMER.raf = null;
-
-  const b1 = $('#timerStart');
-  const b2 = $('#timerStop');
-  const b3 = $('#timerApply');
-  if(b1) b1.disabled = false;
-  if(b2) b2.disabled = true;
-  if(b3) b3.disabled = false;
-
-  const status = $('#timerStatus');
-  if(status) status.textContent = 'Pausado. Puedes aplicar.';
+  timerStopTick();
+  timerSetButtons();
+  timerRender();
+  timerPersist();
 }
 
 function timerResetUI(){
   TIMER.running = false;
-  TIMER.startedAt = null;
+  TIMER.startEpoch = null;
   TIMER.elapsedMs = 0;
-  if(TIMER.raf) cancelAnimationFrame(TIMER.raf);
-  TIMER.raf = null;
+  TIMER.plan = null;
+  TIMER.planIndex = 0;
+
+  timerStopTick();
+  timerSetButtons();
 
   const clock = $('#timerClock');
   const status = $('#timerStatus');
   if(clock) clock.textContent = '00:00';
   if(status) status.textContent = 'Listo.';
 
-  const b1 = $('#timerStart');
-  const b2 = $('#timerStop');
-  const b3 = $('#timerApply');
-  if(b1) b1.disabled = false;
-  if(b2) b2.disabled = true;
-  if(b3) b3.disabled = true;
+  timerPersist();
 }
 
 function timerApply(){
-  const minutes = Math.max(1, Math.round(TIMER.elapsedMs / 60000));
+  const minutes = Math.max(1, Math.round(timerElapsedMs() / 60000));
   const total = $('#totalMin');
   if(total){
     const cur = safeInt(total.value);
@@ -984,8 +1131,26 @@ function bindTimer(){
     bApply.addEventListener('click', timerApply);
   }
 
-  // initial state
-  timerResetUI();
+  // Restore + render initial
+  timerRestore();
+  timerSetButtons();
+  timerRender();
+
+  // Si quedó corriendo, reanuda tick (sin perder tiempo real)
+  if(TIMER.running){
+    timerStartTick();
+    timerCheckPlan();
+  }
+
+  // Cuando vuelve de background, refresca y chequea alarmas
+  document.addEventListener('visibilitychange', () => {
+    timerRender();
+    timerCheckPlan();
+    timerPersist();
+  });
+
+  // Persist final por si el navegador decide morir
+  window.addEventListener('beforeunload', () => timerPersist());
 }
 
 /* =========================

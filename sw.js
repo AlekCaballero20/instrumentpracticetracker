@@ -1,14 +1,15 @@
-/* Instrument Tracker — Service Worker (tiny + safe) v2
+/* Instrument Tracker — Service Worker (tiny + safe) v3
    - Precache: app shell (HTML/CSS/JS/manifest/icons)
-   - Navigation: network-first (para updates)
+   - Navigation: network-first (updates) + offline fallback a index.html
    - Assets: stale-while-revalidate (rápido + se actualiza solo)
    - Hardening: solo GET, same-origin, cache guards
+   - Notifications: click-to-focus/open (para alarmas del timer)
 */
 
 'use strict';
 
 /** 🔁 Sube versión cuando cambies archivos del shell */
-const CACHE_VERSION = 'it-v2';
+const CACHE_VERSION = 'it-v3';
 
 const CACHE_SHELL = `${CACHE_VERSION}-shell`;
 const CACHE_RUNTIME = `${CACHE_VERSION}-runtime`;
@@ -35,7 +36,6 @@ const isSameOrigin = (url) => url.origin === self.location.origin;
 const isGET = (req) => req.method === 'GET';
 
 function shouldCacheResponse(res) {
-  // Solo cacheamos respuestas "buenas" o opaque (por si algún recurso termina así)
   if (!res) return false;
   if (res.status === 200) return true;
   if (res.type === 'opaque') return true;
@@ -51,12 +51,39 @@ function hasNoStore(res) {
   }
 }
 
+async function putSafe(cacheName, reqOrUrl, res) {
+  try {
+    if (!shouldCacheResponse(res) || hasNoStore(res)) return;
+    const cache = await caches.open(cacheName);
+    await cache.put(reqOrUrl, res.clone());
+  } catch (_) {}
+}
+
+async function matchAny(req) {
+  // intenta runtime primero, luego shell
+  const runtime = await caches.open(CACHE_RUNTIME);
+  const hitR = await runtime.match(req);
+  if (hitR) return hitR;
+
+  const shell = await caches.open(CACHE_SHELL);
+  return shell.match(req);
+}
+
 /** INSTALL: precache shell */
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_SHELL);
-      await cache.addAll(APP_SHELL);
+      // addAll falla si un archivo no existe; por eso hacemos best-effort.
+      await Promise.all(
+        APP_SHELL.map(async (url) => {
+          try {
+            await cache.add(url);
+          } catch (_) {
+            // si no existe algún icon, no tumbamos toda la instalación
+          }
+        })
+      );
       await self.skipWaiting();
     })()
   );
@@ -69,7 +96,7 @@ self.addEventListener('activate', (event) => {
       const keys = await caches.keys();
       await Promise.all(
         keys.map((k) => {
-          const isCurrent = k === CACHE_SHELL || k === CACHE_RUNTIME;
+          const isCurrent = (k === CACHE_SHELL || k === CACHE_RUNTIME);
           return isCurrent ? null : caches.delete(k);
         })
       );
@@ -87,20 +114,20 @@ self.addEventListener('fetch', (event) => {
   if (!isGET(req)) return;
   if (!isSameOrigin(url)) return;
 
-  // Navegación (SPA-like): network-first, fallback index.html cacheado
+  // Navegación: network-first, fallback a index.html cacheado
   if (req.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
-          const fresh = await fetch(req);
-          // Actualiza index.html en shell cache para próximas visitas offline
-          const cache = await caches.open(CACHE_SHELL);
-          cache.put('./index.html', fresh.clone());
+          // Evita que una navegación quede “amarrada” a un cached viejo.
+          const fresh = await fetch(req, { cache: 'no-store' });
+          // Actualiza index.html para offline (sin romper)
+          event.waitUntil(putSafe(CACHE_SHELL, './index.html', fresh.clone()));
           return fresh;
-        } catch (err) {
-          // Offline fallback
+        } catch (_) {
+          // Offline fallback: index.html
           const cached = await caches.match('./index.html');
-          return cached || caches.match('./') || new Response('Offline', { status: 503 });
+          return cached || new Response('Offline', { status: 503, statusText: 'Offline' });
         }
       })()
     );
@@ -110,42 +137,74 @@ self.addEventListener('fetch', (event) => {
   // Para assets: stale-while-revalidate
   event.respondWith(
     (async () => {
-      // 1) si está en shell cache, lo devolvemos de una (rapidísimo)
-      const shellHit = await caches.open(CACHE_SHELL).then((c) => c.match(req));
+      // 1) shell hit: responde rápido + revalida
+      const shellCache = await caches.open(CACHE_SHELL);
+      const shellHit = await shellCache.match(req);
+
       if (shellHit) {
-        // Igual intentamos revalidar en background (para que se actualice si cambió)
         event.waitUntil(
           (async () => {
             try {
               const fresh = await fetch(req);
-              if (shouldCacheResponse(fresh) && !hasNoStore(fresh)) {
-                const cache = await caches.open(CACHE_SHELL);
-                await cache.put(req, fresh.clone());
-              }
+              await putSafe(CACHE_SHELL, req, fresh);
             } catch (_) {}
           })()
         );
         return shellHit;
       }
 
-      // 2) runtime cache: primero cached, si no, red
+      // 2) runtime: cached-first + update
       const runtimeCache = await caches.open(CACHE_RUNTIME);
       const cached = await runtimeCache.match(req);
 
-      const fetchPromise = (async () => {
+      const fetchAndCache = (async () => {
         try {
           const fresh = await fetch(req);
-          if (shouldCacheResponse(fresh) && !hasNoStore(fresh)) {
-            await runtimeCache.put(req, fresh.clone());
-          }
+          await putSafe(CACHE_RUNTIME, req, fresh);
           return fresh;
-        } catch (err) {
+        } catch (_) {
           return null;
         }
       })();
 
-      // SWR: cached inmediato, si no hay cached, espera red, si no hay red, 504
-      return cached || (await fetchPromise) || new Response('', { status: 504, statusText: 'Offline' });
+      // si hay cached, lo devolvemos y actualizamos en background
+      if (cached) {
+        event.waitUntil(fetchAndCache);
+        return cached;
+      }
+
+      // si no hay cached, esperamos red; si no hay red, intentamos cualquier cache; si nada, 504
+      const fresh = await fetchAndCache;
+      return fresh || (await matchAny(req)) || new Response('', { status: 504, statusText: 'Offline' });
+    })()
+  );
+});
+
+/** NOTIFICATIONS: click para enfocar/abrir la app */
+self.addEventListener('notificationclick', (event) => {
+  event.notification?.close?.();
+
+  const targetUrl = './';
+
+  event.waitUntil(
+    (async () => {
+      try {
+        const allClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+
+        // Si ya hay una ventana abierta, enfócala
+        for (const client of allClients) {
+          // Algunos browsers no exponen url exacta, pero focus funciona igual
+          if ('focus' in client) {
+            await client.focus();
+            return;
+          }
+        }
+
+        // Si no hay, abre una nueva
+        if (clients.openWindow) {
+          await clients.openWindow(targetUrl);
+        }
+      } catch (_) {}
     })()
   );
 });
